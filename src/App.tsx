@@ -524,13 +524,20 @@ const Dashboard: React.FC<{
                     {r.excessCapital > 0 ? money(r.excessCapital) : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-6 py-5 text-right">
-                    {r.status === 'At Risk' ? (
+                    {r.status === 'At Risk' && r.netFirstYear > 0 ? (
                       <button
                         onClick={() => onExecute(r.id)}
                         className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 shadow-md shadow-indigo-100 transition-all active:scale-95"
                       >
                         Reallocate
                       </button>
+                    ) : r.status === 'At Risk' ? (
+                      <span
+                        title="Above target, but clearing it would cost more than the carrying cost avoided — the net-benefit rule says hold."
+                        className="inline-block text-amber-600 text-[10px] font-black uppercase tracking-widest cursor-help"
+                      >
+                        Hold · net-negative
+                      </span>
                     ) : (
                       <span className="text-slate-300 text-[10px] font-black uppercase tracking-widest">No action</span>
                     )}
@@ -997,7 +1004,9 @@ const App: React.FC = () => {
 
   const executeOne = (id: number) => {
     const row = rows.find((r) => r.id === id);
-    if (!row || row.excessUnits <= 0) return;
+    // Honor the net-benefit rule per row, exactly like "Execute all": only act
+    // when carrying cost avoided exceeds the one-time clearance loss.
+    if (!row || row.excessUnits <= 0 || row.netFirstYear <= 0) return;
     setRecaptured((c) => c + row.recaptured);
     setInventory((prev) => prev.map((i) => (i.id === id ? { ...i, stock: row.targetStock } : i)));
   };
