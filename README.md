@@ -1,87 +1,95 @@
-# OEM Inventory Health Dashboard
+# OEM Inventory Health
 
-A strategic **Days Sales of Inventory (DSI)** optimization platform for automotive OEM supply chain management. This interactive dashboard enables executives to monitor global fleet health, identify capital-locked inventory, and execute real-time reallocation strategies across regional channels.
+**A decision-support model for automotive inventory strategy — from OEM portfolio down to the dealer lot. Answer-first brief, a live net-benefit engine, a governed rollout plan, and a DMS-sourced retail view.**
 
-## Features
+🔗 **Live:** https://privatejoel.github.io/OEM-Inventory-Health/
+📄 **Methodology & assumptions:** [METHODOLOGY.md](./METHODOLOGY.md)
 
-- 📊 **Real-Time DSI Monitoring** – Calculates Days Sales of Inventory metrics across vehicle segments
-- 🎯 **Capital Leakage Detection** – Identifies at-risk inventory (DSI > 60 days) prone to depreciation
-- 🔄 **Inventory Redirection Simulation** – Model 30% capital reallocation with 6% liquidation loss vs. 15% holding-cost savings
-- 📈 **Multi-Segment Analytics** – Track Luxury, Volume, EV, and SUV categories simultaneously
-- 💰 **Liquidity Tracking** – Real-time recaptured capital display for reinvestment decisions
-- 📋 **Executive Case Study** – Comprehensive narrative on OEM inventory challenges and solutions
+---
 
-## Built With
+## The problem
 
-- **React** 18.2 – UI framework
-- **TypeScript** – Type-safe development
-- **Tailwind CSS** 3.3 – Utility-first styling
-- **Vite** 5.0 – Lightning-fast build tool
-- **Lucide React** – Premium icon library
+A multi-billion-dollar national vehicle portfolio is, at any moment, simultaneously
+*over-stocked in slow-turning segments* and *under-stocked in fast ones*. Judging every
+segment against one inventory benchmark hides this — luxury and high-volume models have
+fundamentally different velocity economics. The result is capital bleeding carrying cost in
+one place while demand goes unserved in another.
 
-## Quick Start
+## The approach
+
+Measure each model's **Days Sales of Inventory (DSI)** against a **segment-specific target**,
+then apply a **net-benefit decision rule**: clear above-target inventory *only when the annual
+carrying cost avoided exceeds the one-time clearance loss*, and redeploy the recaptured capital
+to relieve stockout-risk segments first.
+
+## Key results (illustrative baseline)
+
+| Metric | Value |
+|---|---|
+| Capital deployed | **$2.87B** |
+| Capital above segment target | **$412M** (14%) |
+| Annualized carrying cost bled | **$74M/yr** |
+| Capital recaptured | **$387M** |
+| First-year net benefit | **$49M** |
+| Demand-constrained gap funded | **$216M**, fully covered |
+
+The recaptured capital more than covers the volume shortfall — the EV-glut and slow-luxury pools
+fund the lean volume line, with ~$171M left for strategic priorities. Full derivation in
+[METHODOLOGY.md](./METHODOLOGY.md).
+
+## How it's structured
+
+The app is organized as four role-targeted views:
+
+1. **Strategy Brief** — answer-first recommendation with quantified impact, then a
+   Situation / Complication / Resolution case. *(Consulting framing.)*
+2. **Decision Dashboard** — segment-targeted DSI table, corrected and accurately-labeled KPIs,
+   a ranked net-benefit recommendation engine, and **live scenario sliders** (carrying rate,
+   clearance discount, demand shift) so every figure can be stress-tested. *(Planning / analytics.)*
+3. **Execution Plan** — phased rollout, RACI decision rights, governance KPIs, and a
+   risk/mitigation register. *(Program management.)*
+4. **Retail & DMS** — drills the OEM thesis down to the dealer P&L: DMS-sourced aging buckets,
+   floorplan cost, inventory turn, and dealer-level retail levers (incentive / dealer trade /
+   wholesale). Shows the OEM → dealer → DMS data flow. *(Retail execution.)*
+
+## Why the metrics are defensible
+
+This was deliberately built to survive a probing interview:
+
+- **Scale matches the narrative** — national-aggregate units and OEM wholesale costs put the
+  portfolio in the billions, not the low millions.
+- **Metrics are labeled for what they are** — "Annualized Carrying Cost," "Capital Above Target,"
+  and a volume-weighted "Portfolio DSI," not a count ratio mislabeled as a financial return.
+- **The headline tradeoff is actually computed** — carrying cost avoided vs. clearance loss, per
+  pool, with an explicit act/hold rule — not asserted in prose.
+- **Targets are segment-specific**, consistent with the core thesis.
+- **Assumptions are owned and sourced**, with sensitivity and limitations documented openly.
+
+## Built with
+
+React 18 · TypeScript (strict) · Tailwind CSS 3 · Vite 5 · lucide-react
+
+## Run locally
 
 ```bash
-# Install dependencies
 npm install
-
-# Start development server
-npm run dev
-
-# Build for production
-npm run build
+npm run dev      # http://localhost:5173
+npm run build    # production build to /dist
+npm run deploy   # publish /dist to GitHub Pages
 ```
 
-The app will open at `http://localhost:5173` with:
-- **Case Study** tab – Educational narrative on inventory optimization frameworks
-- **Live Dashboard** tab – Interactive inventory health simulator with Hyundai/Genesis product lineup
+## Limitations
 
-## Deployment
-
-### GitHub Pages (Automatic)
-
-This project is configured for automatic deployment to GitHub Pages. Every push to `main` branch triggers the deployment workflow.
-
-**To set up:**
-
-1. Ensure the repository is public or has GitHub Pages enabled
-2. Go to **Settings** → **Pages** → set source to "Deploy from a branch" (gh-pages)
-3. The site will be live at: `https://privatejoel.github.io/OEM-Inventory-Health/`
-
-### Manual Deployment
-
-```bash
-# Deploy to GitHub Pages
-npm run deploy
-```
-
-This runs the build and deploys the `dist` folder to the `gh-pages` branch.
-
-## Use Case
-
-**Scenario:** A global OEM (Hyundai Motor Group) manages a multi-billion-dollar vehicle pipeline across luxury (Genesis G80), volume (Venue, Elantra), and EV segments (IONIQ 5). High-DSI luxury models accumulate holding costs while volume segments suffer from stockouts. This dashboard provides the decision-support layer to:
-
-1. **Detect** – Identify which regional channels have stagnant capital
-2. **Model** – Simulate inventory redirection and capital recapture scenarios
-3. **Execute** – Approve strategic liquidation with transparent ROI calculations
-
-## Data Model
-
-The dashboard tracks 6 vehicle models with realistic metrics:
-
-| Model | Segment | Stock | Monthly Sales | Unit Cost | Category |
-|-------|---------|-------|---|---|---|
-| Genesis G80 | Luxury Sedan | 14 | 3.2 | $56,000 | Luxury |
-| Hyundai Venue | Compact SUV | 58 | 62 | $19,800 | Volume |
-| Hyundai IONIQ 5 | EV SUV | 32 | 38 | $45,000 | EV |
-| Hyundai Santa Fe | Mid-size SUV | 24 | 28 | $36,000 | SUV |
-| Hyundai Elantra | Sedan | 42 | 55 | $21,500 | Volume |
-| Hyundai Palisade | Full-size SUV | 18 | 5.5 | $48,000 | Luxury |
+Portfolio-level (no per-region matrix), steady-state demand, single-period net benefit, and
+contribution margin not yet modeled. Each is called out with its next step in
+[METHODOLOGY.md](./METHODOLOGY.md) §9.
 
 ## Disclaimer
 
-This project is **for educational purposes only**. It is not affiliated with, endorsed by, or representative of Hyundai Motor Group or its subsidiaries. All data, scenarios, and optimization models are simulated to demonstrate product planning and analytical frameworks.
+For portfolio and educational purposes only. Not affiliated with, endorsed by, or representative
+of Hyundai Motor Group or its subsidiaries. All data and scenarios are simulated to demonstrate
+the analytical framework.
 
 ## Author
 
-Joel Johnson – OEM Product Strategy Portfolio
+**Joel Johnson** — Automotive Strategy & Planning Portfolio
