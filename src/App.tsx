@@ -42,14 +42,18 @@ interface InventoryItem {
   unitCost: number; // OEM wholesale cost / unit (USD)
 }
 
+// Demand is calibrated so the slow segments (EV, luxury) carry genuinely soft
+// run-rates — that is what creates a *structural overhang* (inventory that will
+// not bleed off on its own), as opposed to above-target stock that simply needs
+// a production pause. See METHODOLOGY.md §3.
 const HYUNDAI_INVENTORY: InventoryItem[] = [
-  { id: 1, model: 'Genesis G80', segment: 'Luxury Sedan', category: 'Luxury', stock: 3400, avgMonthlySales: 1200, unitCost: 48000 },
-  { id: 2, model: 'Genesis GV80', segment: 'Luxury SUV', category: 'Luxury', stock: 2600, avgMonthlySales: 950, unitCost: 55000 },
-  { id: 3, model: 'Hyundai IONIQ 5', segment: 'EV SUV', category: 'EV', stock: 12000, avgMonthlySales: 3000, unitCost: 40000 },
-  { id: 4, model: 'Hyundai Santa Fe', segment: 'Mid-size SUV', category: 'SUV', stock: 21000, avgMonthlySales: 12000, unitCost: 30000 },
+  { id: 1, model: 'Genesis G80', segment: 'Luxury Sedan', category: 'Luxury', stock: 3400, avgMonthlySales: 650, unitCost: 48000 },
+  { id: 2, model: 'Genesis GV80', segment: 'Luxury SUV', category: 'Luxury', stock: 2600, avgMonthlySales: 520, unitCost: 55000 },
+  { id: 3, model: 'Hyundai IONIQ 5', segment: 'EV SUV', category: 'EV', stock: 14000, avgMonthlySales: 1600, unitCost: 40000 },
+  { id: 4, model: 'Hyundai Santa Fe', segment: 'Mid-size SUV', category: 'SUV', stock: 21000, avgMonthlySales: 11000, unitCost: 30000 },
   { id: 5, model: 'Hyundai Elantra', segment: 'Compact Sedan', category: 'Volume', stock: 9000, avgMonthlySales: 14000, unitCost: 18000 },
-  { id: 6, model: 'Hyundai Palisade', segment: 'Full-size SUV', category: 'SUV', stock: 13500, avgMonthlySales: 9000, unitCost: 42000 },
-  { id: 7, model: 'Hyundai Tucson', segment: 'Compact SUV', category: 'Volume', stock: 30000, avgMonthlySales: 15000, unitCost: 24000 },
+  { id: 6, model: 'Hyundai Palisade', segment: 'Full-size SUV', category: 'SUV', stock: 13500, avgMonthlySales: 8200, unitCost: 42000 },
+  { id: 7, model: 'Hyundai Tucson', segment: 'Compact SUV', category: 'Volume', stock: 24000, avgMonthlySales: 15000, unitCost: 24000 },
 ];
 
 // Segment-specific DSI targets. High-margin / low-velocity segments tolerate
@@ -70,15 +74,17 @@ interface ScenarioParams {
   carryingRate: number; // annual carrying cost as % of unit cost (floorplan + depreciation + storage)
   liquidationDiscount: number; // one-time haircut to clear excess units
   demandShift: number; // +/- shock applied to monthly sales
+  clearWindowMonths: number; // patience window — excess that bleeds off within it is not a clearance candidate
 }
 
 const DEFAULT_PARAMS: ScenarioParams = {
   carryingRate: 0.18,
   liquidationDiscount: 0.06,
   demandShift: 0,
+  clearWindowMonths: 2,
 };
 
-type Status = 'At Risk' | 'Healthy' | 'Stockout Risk';
+type Status = 'Overhang' | 'Bleeding Off' | 'Healthy' | 'Stockout Risk';
 
 interface ProcessedItem extends InventoryItem {
   dailySales: number;
@@ -86,14 +92,18 @@ interface ProcessedItem extends InventoryItem {
   targetDSI: number;
   targetStock: number;
   status: Status;
-  excessUnits: number;
+  excessUnits: number; // units above the segment target (gross)
   excessCapital: number;
+  bleedUnits: number; // excess that clears organically within the patience window
+  overhangUnits: number; // structural overhang — excess that will NOT clear within the window
+  overhangCapital: number;
+  monthsToClear: number; // organic sell-through of the excess at current demand (months)
   shortfallUnits: number;
   shortfallCapital: number;
-  carryingOnExcess: number; // annual $ bleed on the excess
-  recaptured: number; // capital freed if excess cleared (net of discount)
-  liquidationLoss: number; // one-time loss to clear excess
-  netFirstYear: number; // carryingOnExcess - liquidationLoss
+  carryOnOverhang: number; // annual $ carry on the overhang (the recurring money at stake)
+  recaptured: number; // capital freed if the overhang is cleared (net of discount)
+  liquidationLoss: number; // one-time loss to clear the overhang
+  netBenefit: number; // carryOnOverhang - liquidationLoss
   totalCapital: number;
 }
 
@@ -105,19 +115,35 @@ function process(items: InventoryItem[], p: ScenarioParams): ProcessedItem[] {
     const targetDSI = SEGMENT_TARGET_DSI[item.category];
     const targetStock = Math.round(targetDSI * dailySales);
 
-    let status: Status = 'Healthy';
-    if (dsi > targetDSI) status = 'At Risk';
-    else if (dsi < targetDSI * STOCKOUT_FACTOR) status = 'Stockout Risk';
-
     const excessUnits = Math.max(0, item.stock - targetStock);
     const excessCapital = excessUnits * item.unitCost;
+
+    // The key correction: above-target stock that would sell through within the
+    // patience window at current demand is NOT worth liquidating — you simply
+    // pause replenishment and let it bleed off. Only the remainder that will
+    // still be sitting after the window is a structural overhang.
+    const windowUnits = dailySales * 30 * p.clearWindowMonths;
+    const bleedUnits = Math.min(excessUnits, windowUnits);
+    const overhangUnits = Math.max(0, excessUnits - bleedUnits);
+    const overhangCapital = overhangUnits * item.unitCost;
+    const monthsToClear = dailySales > 0 ? excessUnits / (dailySales * 30) : 0;
+
     const shortfallUnits = Math.max(0, targetStock - item.stock);
+
+    let status: Status = 'Healthy';
+    if (dsi < targetDSI * STOCKOUT_FACTOR) status = 'Stockout Risk';
+    else if (overhangUnits > 0) status = 'Overhang';
+    else if (excessUnits > 0) status = 'Bleeding Off';
+
     const shortfallCapital = status === 'Stockout Risk' ? shortfallUnits * item.unitCost : 0;
 
-    const carryingOnExcess = excessCapital * p.carryingRate;
-    const liquidationLoss = excessCapital * p.liquidationDiscount;
-    const recaptured = excessCapital * (1 - p.liquidationDiscount);
-    const netFirstYear = carryingOnExcess - liquidationLoss;
+    // Carry vs. clear is assessed on the overhang only — the part that will not
+    // self-resolve. By construction it sits beyond the window, so annual carry
+    // is the right horizon to weigh against the one-time clearance loss.
+    const carryOnOverhang = overhangCapital * p.carryingRate;
+    const liquidationLoss = overhangCapital * p.liquidationDiscount;
+    const recaptured = overhangCapital * (1 - p.liquidationDiscount);
+    const netBenefit = carryOnOverhang - liquidationLoss;
 
     return {
       ...item,
@@ -128,12 +154,16 @@ function process(items: InventoryItem[], p: ScenarioParams): ProcessedItem[] {
       status,
       excessUnits,
       excessCapital,
+      bleedUnits,
+      overhangUnits,
+      overhangCapital,
+      monthsToClear,
       shortfallUnits,
       shortfallCapital,
-      carryingOnExcess,
+      carryOnOverhang,
       recaptured,
       liquidationLoss,
-      netFirstYear,
+      netBenefit,
       totalCapital: item.stock * item.unitCost,
     };
   });
@@ -141,20 +171,22 @@ function process(items: InventoryItem[], p: ScenarioParams): ProcessedItem[] {
 
 interface Portfolio {
   capitalDeployed: number;
-  capitalAboveTarget: number;
-  carryingBleed: number; // annual $ bleed on above-target capital
+  capitalAboveTarget: number; // gross above target (before bleed-off)
+  overhangCapital: number; // structural overhang — the actionable base
+  carryingBleed: number; // annual $ carry on the overhang
   portfolioDSI: number; // volume-weighted days on hand
   recapturable: number;
   liquidationLossTotal: number;
-  netFirstYearTotal: number;
+  netBenefitTotal: number;
   stockoutGapCapital: number;
-  atRiskCount: number;
+  overhangCount: number;
 }
 
 function summarize(rows: ProcessedItem[]): Portfolio {
   const capitalDeployed = rows.reduce((s, r) => s + r.totalCapital, 0);
   const capitalAboveTarget = rows.reduce((s, r) => s + r.excessCapital, 0);
-  const carryingBleed = rows.reduce((s, r) => s + r.carryingOnExcess, 0);
+  const overhangCapital = rows.reduce((s, r) => s + r.overhangCapital, 0);
+  const carryingBleed = rows.reduce((s, r) => s + r.carryOnOverhang, 0);
   const totalStock = rows.reduce((s, r) => s + r.stock, 0);
   const totalDaily = rows.reduce((s, r) => s + r.dailySales, 0);
   const recapturable = rows.reduce((s, r) => s + r.recaptured, 0);
@@ -163,13 +195,14 @@ function summarize(rows: ProcessedItem[]): Portfolio {
   return {
     capitalDeployed,
     capitalAboveTarget,
+    overhangCapital,
     carryingBleed,
     portfolioDSI: totalDaily > 0 ? Math.round(totalStock / totalDaily) : 0,
     recapturable,
     liquidationLossTotal,
-    netFirstYearTotal: carryingBleed - liquidationLossTotal,
+    netBenefitTotal: carryingBleed - liquidationLossTotal,
     stockoutGapCapital,
-    atRiskCount: rows.filter((r) => r.status === 'At Risk').length,
+    overhangCount: rows.filter((r) => r.status === 'Overhang').length,
   };
 }
 
@@ -190,7 +223,8 @@ const num = (n: number): string => n.toLocaleString('en-US');
 const pct = (n: number): string => `${(n * 100).toFixed(0)}%`;
 
 const STATUS_STYLE: Record<Status, string> = {
-  'At Risk': 'text-red-600 bg-red-50 border-red-200',
+  Overhang: 'text-red-600 bg-red-50 border-red-200',
+  'Bleeding Off': 'text-sky-600 bg-sky-50 border-sky-200',
   Healthy: 'text-green-600 bg-green-50 border-green-200',
   'Stockout Risk': 'text-amber-600 bg-amber-50 border-amber-200',
 };
@@ -227,7 +261,8 @@ const BriefBlock: React.FC<{
 );
 
 const StrategyBrief: React.FC<{ rows: ProcessedItem[]; pf: Portfolio }> = ({ rows, pf }) => {
-  const aboveTargetShare = pf.capitalDeployed > 0 ? pf.capitalAboveTarget / pf.capitalDeployed : 0;
+  const overhangShare = pf.capitalDeployed > 0 ? pf.overhangCapital / pf.capitalDeployed : 0;
+  const bleedOffCapital = Math.max(0, pf.capitalAboveTarget - pf.overhangCapital);
   const evRow = rows.find((r) => r.category === 'EV');
   const leanRow = rows.find((r) => r.status === 'Stockout Risk');
 
@@ -244,8 +279,11 @@ const StrategyBrief: React.FC<{ rows: ProcessedItem[]; pf: Portfolio }> = ({ row
       <div className="bg-slate-900 text-white rounded-3xl p-8 md:p-10 mb-12 shadow-xl">
         <p className="text-indigo-400 font-black text-[11px] uppercase tracking-widest mb-3">Recommendation</p>
         <p className="text-lg md:text-xl leading-relaxed font-medium">
-          Clear <span className="text-indigo-300 font-bold">{money(pf.capitalAboveTarget)}</span> of above-target
-          inventory ({pct(aboveTargetShare)} of deployed capital). This halts{' '}
+          Of <span className="text-indigo-300 font-bold">{money(pf.capitalAboveTarget)}</span> sitting above segment
+          target, only <span className="text-indigo-300 font-bold">{money(pf.overhangCapital)}</span> is a structural
+          overhang ({pct(overhangShare)} of deployed capital) — the rest{' '}
+          <span className="text-indigo-300 font-bold">({money(bleedOffCapital)})</span> bleeds off on its own once
+          replenishment pauses. Clearing the overhang halts{' '}
           <span className="text-indigo-300 font-bold">{money(pf.carryingBleed)}/yr</span> of carrying cost, recaptures{' '}
           <span className="text-indigo-300 font-bold">{money(pf.recapturable)}</span>, and fully funds the{' '}
           <span className="text-indigo-300 font-bold">{money(pf.stockoutGapCapital)}</span> shortfall in
@@ -254,10 +292,10 @@ const StrategyBrief: React.FC<{ rows: ProcessedItem[]; pf: Portfolio }> = ({ row
         </p>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
           {[
-            { k: 'First-year net benefit', v: money(pf.netFirstYearTotal) },
+            { k: 'Net benefit', v: money(pf.netBenefitTotal) },
             { k: 'Recurring savings', v: `${money(pf.carryingBleed)}/yr` },
             { k: 'Capital recaptured', v: money(pf.recapturable) },
-            { k: 'Pools to act on', v: `${pf.atRiskCount}` },
+            { k: 'Overhang pools', v: `${pf.overhangCount}` },
           ].map((m) => (
             <div key={m.k} className="bg-white/5 rounded-2xl p-4 border border-white/10">
               <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1">{m.k}</p>
@@ -289,7 +327,9 @@ const StrategyBrief: React.FC<{ rows: ProcessedItem[]; pf: Portfolio }> = ({ row
           {evRow && (
             <>
               {evRow.model} is running at <span className="font-bold text-slate-700">{evRow.dsi} days</span> against a{' '}
-              {evRow.targetDSI}-day target — softening BEV demand showing up as on-lot capital.{' '}
+              {evRow.targetDSI}-day target — softening BEV demand that, at its current run-rate, would take roughly{' '}
+              <span className="font-bold text-slate-700">{evRow.monthsToClear.toFixed(0)} months</span> to sell through,
+              so it genuinely sits rather than bleeding off.{' '}
             </>
           )}
           {leanRow && (
@@ -298,8 +338,10 @@ const StrategyBrief: React.FC<{ rows: ProcessedItem[]; pf: Portfolio }> = ({ row
               — too lean — so the network is turning away volume demand it could profitably serve.{' '}
             </>
           )}
-          The net effect is <span className="font-bold text-red-600">{money(pf.carryingBleed)}/yr</span> of avoidable
-          carrying cost while a <span className="font-bold text-slate-700">{money(pf.stockoutGapCapital)}</span> demand
+          The discipline is separating the two kinds of above-target stock: only the{' '}
+          <span className="font-bold text-red-600">{money(pf.overhangCapital)}</span> structural overhang bleeds{' '}
+          <span className="font-bold text-red-600">{money(pf.carryingBleed)}/yr</span> in carrying cost; the rest clears
+          itself. Meanwhile a <span className="font-bold text-slate-700">{money(pf.stockoutGapCapital)}</span> demand
           gap goes unfunded.
         </BriefBlock>
 
@@ -307,9 +349,11 @@ const StrategyBrief: React.FC<{ rows: ProcessedItem[]; pf: Portfolio }> = ({ row
           icon={<Zap className="w-5 h-5 text-green-600" />}
           tone="green"
           label="Resolution"
-          lead="A net-benefit decision rule that acts only when carrying cost avoided exceeds the clearance cost."
+          lead="First strip out what self-corrects; then clear only the overhang whose carrying cost exceeds the clearance loss."
         >
-          For every above-target pool, act only when{' '}
+          A two-step rule. First, pause replenishment and let any pool that clears within the patience window{' '}
+          <span className="font-mono text-[13px] bg-slate-100 px-1.5 py-0.5 rounded">bleed off</span> — no haircut needed.
+          Then, for the structural overhang that remains, act only when{' '}
           <span className="font-mono text-[13px] bg-slate-100 px-1.5 py-0.5 rounded">
             carrying cost avoided &gt; one-time clearance loss
           </span>
@@ -386,8 +430,8 @@ const Dashboard: React.FC<{
   onReset: () => void;
 }> = ({ rows, pf, params, setParams, recaptured, onExecute, onExecuteAll, onReset }) => {
   const recommendations = rows
-    .filter((r) => r.status === 'At Risk')
-    .sort((a, b) => b.excessCapital - a.excessCapital);
+    .filter((r) => r.status === 'Overhang')
+    .sort((a, b) => b.overhangCapital - a.overhangCapital);
 
   return (
     <div className="max-w-7xl mx-auto px-4 md:px-8">
@@ -418,17 +462,17 @@ const Dashboard: React.FC<{
           tip="Sum of (units in stock x OEM wholesale cost) across all models."
         />
         <KpiCard
-          label="Capital Above Target"
-          value={money(pf.capitalAboveTarget)}
-          sub="Value of units beyond each segment's target DSI."
-          tip="Sum over at-risk pools of (units above target stock x unit cost). The base that carrying cost bleeds from."
+          label="Structural Overhang"
+          value={money(pf.overhangCapital)}
+          sub={`Actionable slice; ${money(pf.capitalAboveTarget)} is above target before bleed-off.`}
+          tip="Above-target capital that will NOT clear within the patience window at current demand. This — not gross above-target — is what carrying cost bleeds from and what clearance acts on."
           accent="text-red-600"
         />
         <KpiCard
           label="Annualized Carrying Cost"
           value={money(pf.carryingBleed)}
-          sub={`Bleed on above-target capital at ${pct(params.carryingRate)}/yr.`}
-          tip="Capital Above Target x carrying rate (floorplan interest + depreciation + storage). The recurring money at stake."
+          sub={`Bleed on the structural overhang at ${pct(params.carryingRate)}/yr.`}
+          tip="Structural Overhang x carrying rate (floorplan interest + depreciation + storage). The recurring money at stake on inventory that will not self-resolve."
           accent="text-red-600"
         />
         <KpiCard
@@ -446,7 +490,7 @@ const Dashboard: React.FC<{
           <h2 className="font-black text-sm uppercase tracking-widest text-slate-700">Scenario Assumptions</h2>
           <span className="text-[10px] text-slate-400 font-medium">— drag to test sensitivity; every figure recomputes live</span>
         </div>
-        <div className="grid md:grid-cols-3 gap-8">
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
           <Slider
             label="Annual carrying cost"
             value={params.carryingRate}
@@ -464,6 +508,15 @@ const Dashboard: React.FC<{
             step={0.01}
             display={pct(params.liquidationDiscount)}
             onChange={(v) => setParams((p) => ({ ...p, liquidationDiscount: v }))}
+          />
+          <Slider
+            label="Bleed-off window"
+            value={params.clearWindowMonths}
+            min={1}
+            max={6}
+            step={1}
+            display={`${params.clearWindowMonths} mo`}
+            onChange={(v) => setParams((p) => ({ ...p, clearWindowMonths: v }))}
           />
           <Slider
             label="Demand shift"
@@ -485,10 +538,11 @@ const Dashboard: React.FC<{
             <h2 className="font-black text-lg tracking-tight">Segment Velocity Map</h2>
             <Info className="w-4 h-4 text-slate-300 cursor-help" />
           </div>
-          <div className="flex gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+          <div className="flex gap-4 text-[10px] font-black uppercase tracking-widest text-slate-400 flex-wrap">
             <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-green-500 rounded-full" /> Healthy</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-sky-500 rounded-full" /> Bleeding Off</span>
             <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-amber-500 rounded-full" /> Stockout Risk</span>
-            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-red-500 rounded-full" /> At Risk</span>
+            <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 bg-red-500 rounded-full" /> Overhang</span>
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -498,7 +552,7 @@ const Dashboard: React.FC<{
                 <th className="px-6 py-4">Model</th>
                 <th className="px-6 py-4 text-center">DSI / Target</th>
                 <th className="px-6 py-4 text-center">Status</th>
-                <th className="px-6 py-4 text-right">Capital Above Target</th>
+                <th className="px-6 py-4 text-right">Overhang Capital</th>
                 <th className="px-6 py-4 text-right">Action</th>
               </tr>
             </thead>
@@ -510,10 +564,15 @@ const Dashboard: React.FC<{
                     <p className="text-[10px] text-slate-400 font-mono tracking-wide">{r.segment} · {num(r.stock)} units</p>
                   </td>
                   <td className="px-6 py-5 text-center">
-                    <span className={`text-sm font-black ${r.status === 'At Risk' ? 'text-red-600' : r.status === 'Stockout Risk' ? 'text-amber-600' : 'text-slate-800'}`}>
+                    <span className={`text-sm font-black ${r.status === 'Overhang' ? 'text-red-600' : r.status === 'Stockout Risk' ? 'text-amber-600' : r.status === 'Bleeding Off' ? 'text-sky-600' : 'text-slate-800'}`}>
                       {r.dsi}
                     </span>
                     <span className="text-[11px] text-slate-400 font-bold"> / {r.targetDSI}d</span>
+                    {r.excessUnits > 0 && (
+                      <p className="text-[9px] text-slate-400 font-bold uppercase tracking-tight mt-0.5">
+                        clears in ~{Math.round(r.monthsToClear * 30)}d
+                      </p>
+                    )}
                   </td>
                   <td className="px-6 py-5 text-center">
                     <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-tight border ${STATUS_STYLE[r.status]}`}>
@@ -521,22 +580,29 @@ const Dashboard: React.FC<{
                     </span>
                   </td>
                   <td className="px-6 py-5 text-right font-black text-slate-700">
-                    {r.excessCapital > 0 ? money(r.excessCapital) : <span className="text-slate-300">—</span>}
+                    {r.overhangCapital > 0 ? money(r.overhangCapital) : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="px-6 py-5 text-right">
-                    {r.status === 'At Risk' && r.netFirstYear > 0 ? (
+                    {r.status === 'Overhang' && r.netBenefit > 0 ? (
                       <button
                         onClick={() => onExecute(r.id)}
                         className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 shadow-md shadow-indigo-100 transition-all active:scale-95"
                       >
                         Reallocate
                       </button>
-                    ) : r.status === 'At Risk' ? (
+                    ) : r.status === 'Overhang' ? (
                       <span
-                        title="Above target, but clearing it would cost more than the carrying cost avoided — the net-benefit rule says hold."
+                        title="Structural overhang, but clearing it would cost more than the carrying cost avoided — the net-benefit rule says hold."
                         className="inline-block text-amber-600 text-[10px] font-black uppercase tracking-widest cursor-help"
                       >
                         Hold · net-negative
+                      </span>
+                    ) : r.status === 'Bleeding Off' ? (
+                      <span
+                        title="Above target, but it sells through within the bleed-off window at current demand. Pause replenishment and let it clear — no clearance loss needed."
+                        className="inline-block text-sky-600 text-[10px] font-black uppercase tracking-widest cursor-help"
+                      >
+                        Let bleed off
                       </span>
                     ) : (
                       <span className="text-slate-300 text-[10px] font-black uppercase tracking-widest">No action</span>
@@ -556,7 +622,7 @@ const Dashboard: React.FC<{
             <div className="flex items-center gap-2 flex-wrap">
               <TrendingDown className="w-5 h-5 text-indigo-600" />
               <h2 className="font-black text-lg tracking-tight">Recommended Actions</h2>
-              <span className="text-[10px] text-slate-400 font-medium">— ranked by capital above target, net-benefit tested</span>
+              <span className="text-[10px] text-slate-400 font-medium">— structural overhang only, ranked by size, net-benefit tested</span>
             </div>
             <button
               onClick={onExecuteAll}
@@ -571,18 +637,19 @@ const Dashboard: React.FC<{
                 <div className="flex items-start gap-3">
                   <div className="p-2 bg-red-50 rounded-lg mt-0.5"><ArrowDownRight className="w-4 h-4 text-red-600" /></div>
                   <div>
-                    <p className="font-black text-slate-800">{r.model} — clear {num(r.excessUnits)} units to target</p>
+                    <p className="font-black text-slate-800">{r.model} — clear {num(r.overhangUnits)} units of overhang</p>
                     <p className="text-xs text-slate-500 leading-relaxed max-w-xl">
-                      Avoids <span className="font-bold text-slate-700">{money(r.carryingOnExcess)}/yr</span> carrying cost
+                      Avoids <span className="font-bold text-slate-700">{money(r.carryOnOverhang)}/yr</span> carrying cost
                       at a one-time <span className="font-bold text-slate-700">{money(r.liquidationLoss)}</span> clearance
-                      loss. Recaptures <span className="font-bold text-slate-700">{money(r.recaptured)}</span>.
+                      loss. Recaptures <span className="font-bold text-slate-700">{money(r.recaptured)}</span>.{' '}
+                      <span className="text-slate-400">({num(r.bleedUnits)} more units bleed off on their own.)</span>
                     </p>
                   </div>
                 </div>
                 <div className="text-right shrink-0">
-                  <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">First-year net benefit</p>
-                  <p className={`text-xl font-black ${r.netFirstYear >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                    {money(r.netFirstYear)}
+                  <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest">Net benefit</p>
+                  <p className={`text-xl font-black ${r.netBenefit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    {money(r.netBenefit)}
                   </p>
                 </div>
               </div>
@@ -1005,21 +1072,22 @@ const App: React.FC = () => {
   const executeOne = (id: number) => {
     const row = rows.find((r) => r.id === id);
     // Honor the net-benefit rule per row, exactly like "Execute all": only act
-    // when carrying cost avoided exceeds the one-time clearance loss.
-    if (!row || row.excessUnits <= 0 || row.netFirstYear <= 0) return;
+    // when carrying cost avoided exceeds the one-time clearance loss. Clear only
+    // the structural overhang — the bleed-off portion is left to sell organically.
+    if (!row || row.overhangUnits <= 0 || row.netBenefit <= 0) return;
     setRecaptured((c) => c + row.recaptured);
-    setInventory((prev) => prev.map((i) => (i.id === id ? { ...i, stock: row.targetStock } : i)));
+    setInventory((prev) => prev.map((i) => (i.id === id ? { ...i, stock: i.stock - row.overhangUnits } : i)));
   };
 
   const executeAll = () => {
-    const positive = rows.filter((r) => r.status === 'At Risk' && r.netFirstYear > 0);
+    const positive = rows.filter((r) => r.status === 'Overhang' && r.netBenefit > 0);
     if (positive.length === 0) return;
     const freed = positive.reduce((s, r) => s + r.recaptured, 0);
     setRecaptured((c) => c + freed);
     setInventory((prev) =>
       prev.map((i) => {
         const hit = positive.find((r) => r.id === i.id);
-        return hit ? { ...i, stock: hit.targetStock } : i;
+        return hit ? { ...i, stock: i.stock - hit.overhangUnits } : i;
       })
     );
   };

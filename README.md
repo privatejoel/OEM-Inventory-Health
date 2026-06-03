@@ -18,23 +18,27 @@ one place while demand goes unserved in another.
 ## The approach
 
 Measure each model's **Days Sales of Inventory (DSI)** against a **segment-specific target**,
-then apply a **net-benefit decision rule**: clear above-target inventory *only when the annual
-carrying cost avoided exceeds the one-time clearance loss*, and redeploy the recaptured capital
-to relieve stockout-risk segments first.
+separate stock that will **bleed off on its own** (just pause replenishment) from a genuine
+**structural overhang**, then clear only that overhang *when the annual carrying cost avoided
+exceeds the one-time clearance loss* — redeploying the recaptured capital to relieve
+stockout-risk segments first. The point of the bleed-off step: never discount demand you
+already have.
 
 ## Key results (illustrative baseline)
 
 | Metric | Value |
 |---|---|
-| Capital deployed | **$2.87B** |
-| Capital above segment target | **$412M** (14%) |
-| Annualized carrying cost bled | **$74M/yr** |
-| Capital recaptured | **$387M** |
-| First-year net benefit | **$49M** |
+| Capital deployed | **$2.80B** |
+| Capital above segment target (gross) | **$603M** (22%) |
+| Structural overhang (won't bleed off) | **$320M** (11%) |
+| Annualized carrying cost on overhang | **$58M/yr** |
+| Capital recaptured | **$301M** |
+| Net benefit | **$38M** |
 | Demand-constrained gap funded | **$216M**, fully covered |
 
-The recaptured capital more than covers the volume shortfall — the EV-glut and slow-luxury pools
-fund the lean volume line, with ~$171M left for strategic priorities. Full derivation in
+Most above-target stock isn't cleared — it *bleeds off* once replenishment pauses; only the **$320M
+structural overhang** (EV-glut + slow-luxury) is liquidated. The recaptured capital more than covers
+the volume shortfall, with **~$85M** left for strategic priorities. Full derivation in
 [METHODOLOGY.md](./METHODOLOGY.md).
 
 ## How it's structured
@@ -43,9 +47,10 @@ The app is organized as four role-targeted views:
 
 1. **Strategy Brief** — answer-first recommendation with quantified impact, then a
    Situation / Complication / Resolution case. *(Consulting framing.)*
-2. **Decision Dashboard** — segment-targeted DSI table, corrected and accurately-labeled KPIs,
-   a ranked net-benefit recommendation engine, and **live scenario sliders** (carrying rate,
-   clearance discount, demand shift) so every figure can be stress-tested. *(Planning / analytics.)*
+2. **Decision Dashboard** — segment-targeted DSI table that separates a **structural overhang**
+   from above-target stock that simply **bleeds off**, accurately-labeled KPIs, a ranked
+   net-benefit recommendation engine, and **live scenario sliders** (carrying rate, clearance
+   discount, bleed-off window, demand shift) so every figure can be stress-tested. *(Planning / analytics.)*
 3. **Execution Plan** — phased rollout, RACI decision rights, governance KPIs, and a
    risk/mitigation register. *(Program management.)*
 4. **Retail & DMS** — drills the OEM thesis down to the dealer P&L: DMS-sourced aging buckets,
@@ -62,6 +67,8 @@ This was deliberately built to survive a probing interview:
   and a volume-weighted "Portfolio DSI," not a count ratio mislabeled as a financial return.
 - **The headline tradeoff is actually computed** — carrying cost avoided vs. clearance loss, per
   pool, with an explicit act/hold rule — not asserted in prose.
+- **Above-target ≠ liquidate** — the model strips out inventory that sells through on its own and
+  only clears the structural overhang, so it never recommends discounting demand you already have.
 - **Targets are segment-specific**, consistent with the core thesis.
 - **Assumptions are owned and sourced**, with sensitivity and limitations documented openly.
 
